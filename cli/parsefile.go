@@ -83,6 +83,10 @@ func main() {
 	var pmts []psi.PMT
 	pm := pat.ProgramMap()
 	for pn, pid := range pm {
+		if pn == 0 {
+			// invalid program in PAT
+			continue
+		}
 		pmt, err := psi.ReadPMT(reader, pid)
 		if err != nil {
 			panic(err)
