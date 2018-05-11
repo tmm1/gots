@@ -33,9 +33,11 @@ import (
 	"io"
 	"os"
 
+	"github.com/Comcast/gots"
 	"github.com/Comcast/gots/ebp"
 	"github.com/Comcast/gots/packet"
 	"github.com/Comcast/gots/packet/adaptationfield"
+	"github.com/Comcast/gots/pes"
 	"github.com/Comcast/gots/psi"
 	"github.com/Comcast/gots/scte35"
 )
@@ -45,6 +47,7 @@ func main() {
 	fileName := flag.String("f", "", "Required: Path to TS file to read")
 	showPmt := flag.Bool("pmt", true, "Output PMT info")
 	showEbp := flag.Bool("ebp", false, "Output EBP info. This is a lot of info")
+	showTiming := flag.Bool("timing", false, "Output timing info")
 	dumpSCTE35 := flag.Bool("scte35", false, "Output SCTE35 signals and info.")
 	showPacketNumberOfPID := flag.Int("pid", 0, "Dump the contents of the first packet encountered on PID to stdout")
 	flag.Parse()
@@ -161,6 +164,26 @@ func main() {
 			if pktPid == pid {
 				printlnf("First Packet of PID %d contents: %x", pid, pkt)
 				break
+			}
+		}
+		if *showTiming {
+			currPID, _ := packet.Pid(pkt)
+			if ad, _ := packet.ContainsAdaptationField(pkt); ad {
+				if adaptationfield.HasPCR(pkt) {
+					pcrBytes, _ := adaptationfield.PCR(pkt)
+					pcr := gots.ExtractPCR(pcrBytes)
+					printlnf("pid %v: PCR = %.4f (%v)", currPID, float64(pcr)/27000000.0, pcr)
+				}
+			}
+
+			if es, err := packet.PESHeader(pkt); err == nil {
+				h, err := pes.NewPESHeader(es)
+				if err == nil && h.HasPTS() {
+					printlnf("pid %v: PTS = %.4f (%v)", currPID, float64(h.PTS())/90000.0, h.PTS())
+				}
+				if err == nil && h.HasDTS() && h.DTS() != 0 {
+					printlnf("pid %v: DTS = %.4f (%v)", currPID, float64(h.DTS())/90000.0, h.DTS())
+				}
 			}
 		}
 	}
