@@ -45,6 +45,7 @@ import (
 // main parses a ts file that is provided with the -f flag
 func main() {
 	fileName := flag.String("f", "", "Required: Path to TS file to read")
+	outName := flag.String("o", "", "Path to TS file to write")
 	showPmt := flag.Bool("pmt", true, "Output PMT info")
 	showEbp := flag.Bool("ebp", false, "Output EBP info. This is a lot of info")
 	showTiming := flag.Bool("timing", false, "Output timing info")
@@ -113,6 +114,20 @@ func main() {
 		}
 	}
 
+	var outFile *os.File
+	if *outName != "" {
+		outFile, err = os.OpenFile(*outName, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+		if err != nil {
+			printlnf("Cannot open output file %s: %v", *outFile, err)
+			return
+		}
+		defer outFile.Close()
+	}
+
+	var prevPCR, prevNewPCR uint64
+	prevPTS := make(map[uint16]uint64, 0)
+	var currentOffset, lastOffset int64
+
 	for {
 		if _, err := io.ReadFull(reader, pkt); err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
@@ -176,19 +191,61 @@ func main() {
 				if adaptationfield.HasPCR(pkt) {
 					pcrBytes, _ := adaptationfield.PCR(pkt)
 					pcr := gots.ExtractPCR(pcrBytes)
-					printlnf("pid %v: PCR = %.4f (%v)", currPID, float64(pcr)/27000000.0, pcr)
+
+					if prevPCR == 0 && currentOffset == 0 {
+						currentOffset = -int64(pcr) + (1 * gots.PcrClockRate)
+					} else if prevPCR != 0 && (pcr > prevPCR+2*gots.PcrClockRate || pcr < prevPCR) {
+						printlnf("PCR discontinuity detected! (%v -> %v)", prevPCR, pcr)
+						lastOffset = currentOffset
+						currentOffset = -int64(pcr) + int64(prevNewPCR) + (0.25 * gots.PcrClockRate)
+					}
+					prevPCR = pcr
+
+					newPCR := gots.PCR(pcr).Add(gots.PCR(currentOffset))
+					gots.InsertPCR(pcrBytes, uint64(newPCR))
+					prevNewPCR = uint64(newPCR)
+
+					printlnf("pid %v: PCR = %.4f -> %.4f (%v -> %v)", currPID, float64(pcr)/gots.PcrClockRate, float64(newPCR)/gots.PcrClockRate, pcr, newPCR)
 				}
 			}
 
 			if es, err := packet.PESHeader(pkt); err == nil {
 				h, err := pes.NewPESHeader(es)
 				if err == nil && h.HasPTS() {
-					printlnf("pid %v: PTS = %.4f (%v)", currPID, float64(h.PTS())/90000.0, h.PTS())
+					pts := h.PTS()
+
+					prev := prevPTS[currPID]
+					if prevPCR == 0 && currentOffset == 0 {
+						currentOffset = -int64(pts*300) + (1 * gots.PcrClockRate)
+					}
+					if prev != 0 && (pts > prev+gots.PtsClockRate || pts < prev-gots.PtsClockRate) {
+						printlnf("PTS discontinuity detected!")
+					}
+					prevPTS[currPID] = pts
+
+					newPTS := gots.PTS(pts).Add(gots.PTS(currentOffset / 300))
+					if prevNewPCR != 0 && uint64(newPTS) > (prevNewPCR/300)+2*gots.PtsClockRate {
+						newPTS = gots.PTS(pts).Add(gots.PTS(lastOffset / 300))
+					}
+					gots.InsertPTS(es[9:14], uint64(newPTS))
+					printlnf("pid %v: PTS = %.4f -> %.4f (%v -> %v)", currPID, float64(pts)/gots.PtsClockRate, float64(newPTS)/gots.PtsClockRate, pts, newPTS)
+
 				}
 				if err == nil && h.HasDTS() && h.DTS() != 0 {
-					printlnf("pid %v: DTS = %.4f (%v)", currPID, float64(h.DTS())/90000.0, h.DTS())
+					dts := h.DTS()
+
+					newDTS := gots.PTS(dts).Add(gots.PTS(currentOffset / 300))
+					if uint64(newDTS) > (prevNewPCR/300)+2*gots.PtsClockRate {
+						newDTS = gots.PTS(dts).Add(gots.PTS(lastOffset / 300))
+					}
+					gots.InsertPTS(es[14:19], uint64(newDTS))
+
+					printlnf("pid %v: DTS = %.4f -> %.4f (%v -> %v)", currPID, float64(dts)/gots.PtsClockRate, float64(newDTS)/gots.PtsClockRate, dts, newDTS)
 				}
 			}
+		}
+		if outFile != nil {
+			outFile.Write(pkt)
 		}
 	}
 	println()
