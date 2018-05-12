@@ -24,6 +24,92 @@ SOFTWARE.
 
 package gots
 
+import (
+	"math"
+)
+
+// PCR constants
+const (
+	// MaxPcrValue is the highest value the PCR can hold before it rolls over.
+	MaxPcrValue = 2576980377599 // (2^33-1)*300 + 299
+
+	// MaxPcrTicks is the length of the complete PCR timeline.
+	MaxPcrTicks = 2576980377600 // 2^33 * 300.
+
+	// Used as a sentinel values for algorithms working against PCR
+	PcrNegativeInfinity = PCR(math.MaxUint64 - 1) //18446744073709551614
+	PcrPositiveInfinity = PCR(math.MaxUint64)     //18446744073709551615
+	PcrClockRate        = 27000000
+
+	// UpperPcrRolloverThreshold is the threshold for a rollover on the upper end, MaxPcrValue - 30 min
+	UpperPcrRolloverThreshold = 2576170377599
+	// LowerPcrRolloverThreshold is the threshold for a rollover on the lower end, 30 min
+	LowerPcrRolloverThreshold = 810000000
+)
+
+// PCR represents PCR time
+type PCR uint64
+
+// After checks if this PCR is after the other PCR
+func (p PCR) After(other PCR) bool {
+	switch {
+	case other == PcrPositiveInfinity:
+		return false
+	case other == PcrNegativeInfinity:
+		return true
+	case p.RolledOver(other):
+		return true
+	case other.RolledOver(p):
+		return false
+	default:
+		return p > other
+	}
+}
+
+// GreaterOrEqual returns true if the method reciever is >= the provided PCR
+func (p PCR) GreaterOrEqual(other PCR) bool {
+	if p == other {
+		return true
+	}
+
+	return p.After(other)
+}
+
+// RolledOver checks if this PTS just rollover compared to the other PTS
+func (p PCR) RolledOver(other PCR) bool {
+	if other == PcrNegativeInfinity || other == PcrPositiveInfinity {
+		return false
+	}
+
+	if p < LowerPcrRolloverThreshold && other > UpperPcrRolloverThreshold {
+		return true
+	}
+	return false
+}
+
+// DurationFrom returns the difference between the two pcr times. This number is always positive.
+func (p PCR) DurationFrom(from PCR) uint64 {
+	switch {
+	case p.RolledOver(from):
+		return uint64((MaxPcrTicks - from) + p)
+	case from.RolledOver(p):
+		return uint64((MaxPcrTicks - p) + from)
+	case p < from:
+		return uint64(from - p)
+	default:
+		return uint64(p - from)
+	}
+}
+
+// Add adds the two PCR times together and returns a new PCR
+func (p PCR) Add(x PCR) PCR {
+	result := p + x
+	if result > MaxPcrValue {
+		result = result - MaxPcrTicks
+	}
+	return PCR(result)
+}
+
 // ExtractPCR extracts a PCR time
 // PCR is the Program Clock Reference.
 // First 33 bits are PCR base.
