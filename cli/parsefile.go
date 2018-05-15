@@ -307,6 +307,7 @@ func printSpliceInsertCommand(insert scte35.SpliceInsertCommand) {
 
 func printPmt(pn uint16, pmt psi.PMT) {
 	printlnf("Program #%v PMT", pn)
+	printlnf("\tPCR %v", pmt.PCRPid())
 	printlnf("\tPIDs %v", pmt.Pids())
 	println("\tElementary Streams")
 	for _, es := range pmt.ElementaryStreams() {

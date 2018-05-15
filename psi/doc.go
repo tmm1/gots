@@ -93,6 +93,7 @@ type PAT interface {
 // PMT is a Program Map Table.
 type PMT interface {
 	Pids() []uint16
+	PCRPid() uint16
 	IsPidForStreamWherePresentationLagsEbp(pid uint16) bool
 	ElementaryStreams() []PmtElementaryStream
 	RemoveElementaryStreams(pids []uint16)

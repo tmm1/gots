@@ -40,6 +40,7 @@ const (
 )
 
 type pmt struct {
+	pcrPid            uint16
 	pids              []uint16
 	elementaryStreams []PmtElementaryStream
 }
@@ -89,6 +90,9 @@ func (p *pmt) parsePMTSection(pmtBytes []byte) error {
 	programInfoLength := uint16(pmtBytes[programInfoLengthOffset]&0x0f)<<8 |
 		uint16(pmtBytes[programInfoLengthOffset+1])
 
+	p.pcrPid = uint16(pmtBytes[programInfoLengthOffset-2]&0x1f)<<8 |
+		uint16(pmtBytes[programInfoLengthOffset-1])
+
 	// start at the stream descriptors, parse until the CRC
 	for offset := programInfoLengthOffset + 2 + programInfoLength; offset < PSIHeaderLen+sectionLength-pmtEsDescriptorStaticLen-CrcLen; {
 		elementaryStreamType := uint8(pmtBytes[offset])
@@ -125,6 +129,10 @@ func (p *pmt) parsePMTSection(pmtBytes []byte) error {
 	p.pids = pids
 	p.elementaryStreams = elementaryStreams
 	return nil
+}
+
+func (p *pmt) PCRPid() uint16 {
+	return p.pcrPid
 }
 
 func (p *pmt) Pids() []uint16 {
