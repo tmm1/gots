@@ -205,7 +205,7 @@ func (pes *pESHeader) HasPTS() bool {
 }
 
 func (pes *pESHeader) HasDTS() bool {
-	return (pes.ptsDtsIndicator & gots.PTS_DTS_INDICATOR_BOTH) != 0
+	return pes.ptsDtsIndicator == gots.PTS_DTS_INDICATOR_BOTH
 }
 
 func (pes *pESHeader) Format() string {
