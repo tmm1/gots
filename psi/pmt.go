@@ -89,7 +89,6 @@ func (p *pmt) parsePMTSection(pmtBytes []byte) error {
 	sectionLength := sectionLength(pmtBytes)
 	programInfoLength := uint16(pmtBytes[programInfoLengthOffset]&0x0f)<<8 |
 		uint16(pmtBytes[programInfoLengthOffset+1])
-
 	p.pcrPid = uint16(pmtBytes[programInfoLengthOffset-2]&0x1f)<<8 |
 		uint16(pmtBytes[programInfoLengthOffset-1])
 
