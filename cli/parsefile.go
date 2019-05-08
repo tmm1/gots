@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 
 	"github.com/Comcast/gots"
 	"github.com/Comcast/gots/ebp"
@@ -41,6 +42,51 @@ import (
 	"github.com/Comcast/gots/psi"
 	"github.com/Comcast/gots/scte35"
 )
+
+type PidInfo struct {
+	minPtsKnown            bool
+	minPts, maxPts         uint64
+	prevMinPtsKnown        bool
+	prevMinPts, prevMaxPts uint64
+	recentPts              map[uint64]bool
+}
+
+func (i *PidInfo) addPts(pts uint64) {
+	i.recentPts[pts] = true
+	n := len(i.recentPts)
+	if n > 4 {
+		keys := i.sortedRecentPts()
+		for _, k := range keys {
+			if len(i.recentPts) <= 4 {
+				break
+			}
+			delete(i.recentPts, k)
+		}
+	}
+}
+
+func (i *PidInfo) transformPts(pts uint64) uint64 {
+	return pts - i.minPts + gots.PtsClockRate
+}
+
+func (i *PidInfo) sortedRecentPts() []uint64 {
+	var keys []uint64
+	for k := range i.recentPts {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
+func (i *PidInfo) frameDuration() uint64 {
+	if len(i.recentPts) >= 2 {
+		keys := i.sortedRecentPts()
+		return keys[1] - keys[0]
+	}
+	return 0
+}
 
 // main parses a ts file that is provided with the -f flag
 func main() {
@@ -88,6 +134,9 @@ func main() {
 			// invalid program in PAT
 			continue
 		}
+		//if pid != 20012 {
+		//	continue
+		//}
 		pmt, err := psi.ReadPMT(reader, pid)
 		if err != nil {
 			panic(err)
@@ -124,9 +173,10 @@ func main() {
 		defer outFile.Close()
 	}
 
-	var prevPCR, prevNewPCR uint64
+	pidInfo := make(map[uint16]*PidInfo)
 	prevPTS := make(map[uint16]uint64, 0)
-	var currentOffset, lastOffset int64
+	// var prevPCR, prevNewPCR uint64
+	// var currentOffset, lastOffset int64
 
 	for {
 		if _, err := io.ReadFull(reader, pkt); err != nil {
@@ -187,25 +237,41 @@ func main() {
 		}
 		if *showTiming {
 			currPID, _ := packet.Pid(pkt)
+			info, ok := pidInfo[currPID]
+			if !ok {
+				info = &PidInfo{
+					recentPts: make(map[uint64]bool),
+				}
+				pidInfo[currPID] = info
+			}
 			if ad, _ := packet.ContainsAdaptationField(pkt); ad {
 				if adaptationfield.HasPCR(pkt) {
 					pcrBytes, _ := adaptationfield.PCR(pkt)
 					pcr := gots.ExtractPCR(pcrBytes)
 
-					if prevPCR == 0 && currentOffset == 0 {
-						currentOffset = -int64(pcr) + (1 * gots.PcrClockRate)
-					} else if prevPCR != 0 && (pcr > prevPCR+2*gots.PcrClockRate || pcr < prevPCR) {
-						printlnf("PCR discontinuity detected! (%v -> %v)", prevPCR, pcr)
-						lastOffset = currentOffset
-						currentOffset = -int64(pcr) + int64(prevNewPCR) + (0.25 * gots.PcrClockRate)
+					// if prevPCR == 0 && currentOffset == 0 {
+					// 	currentOffset = -int64(pcr) + (1 * gots.PcrClockRate)
+					// } else if prevPCR != 0 && (pcr > prevPCR+2*gots.PcrClockRate || pcr < prevPCR) {
+					// 	printlnf("pid %v: pcr discontinuity detected! (%v -> %v)", currPID, prevPCR, pcr)
+					// 	lastOffset = currentOffset
+					// 	currentOffset = -int64(pcr) + int64(prevNewPCR) + (0.25 * gots.PcrClockRate)
+					// }
+					// prevPCR = pcr
+
+					if outFile != nil && false {
+						// newPCR := gots.PCR(pcr).Add(gots.PCR(currentOffset))
+						// gots.InsertPCR(pcrBytes, uint64(newPCR))
+						// prevNewPCR = uint64(newPCR)
+						// printf("pid %v: pcr = %.4f -> %.4f (%v -> %v)", currPID, float64(pcr)/gots.PcrClockRate, float64(newPCR)/gots.PcrClockRate, pcr, newPCR)
+					} else {
+						printf("pid %v: pcr = %.4f (%v)", currPID, float64(pcr)/gots.PcrClockRate, pcr)
 					}
-					prevPCR = pcr
 
-					newPCR := gots.PCR(pcr).Add(gots.PCR(currentOffset))
-					gots.InsertPCR(pcrBytes, uint64(newPCR))
-					prevNewPCR = uint64(newPCR)
-
-					printlnf("pid %v: PCR = %.4f -> %.4f (%v -> %v)", currPID, float64(pcr)/gots.PcrClockRate, float64(newPCR)/gots.PcrClockRate, pcr, newPCR)
+					if adaptationfield.IsDiscontinuous(pkt) {
+						printlnf(" [discont]")
+					} else {
+						printlnf("")
+					}
 				}
 			}
 
@@ -215,32 +281,52 @@ func main() {
 					pts := h.PTS()
 
 					prev := prevPTS[currPID]
-					if prevPCR == 0 && currentOffset == 0 {
-						currentOffset = -int64(pts*300) + (1 * gots.PcrClockRate)
-					}
+					// if prevPCR == 0 && currentOffset == 0 {
+					// 	currentOffset = -int64(pts*300) + (1 * gots.PcrClockRate)
+					// }
 					if prev != 0 && (pts > prev+gots.PtsClockRate || pts < prev-gots.PtsClockRate) {
-						printlnf("PTS discontinuity detected!")
+						printlnf("pid %v: PTS discontinuity detected (%v -> %v)!", currPID, prev, pts)
 					}
 					prevPTS[currPID] = pts
 
-					newPTS := gots.PTS(pts).Add(gots.PTS(currentOffset / 300))
-					if prevNewPCR != 0 && uint64(newPTS) > (prevNewPCR/300)+2*gots.PtsClockRate {
-						newPTS = gots.PTS(pts).Add(gots.PTS(lastOffset / 300))
+					if !info.minPtsKnown {
+						info.minPts = pts
+						info.minPtsKnown = true
 					}
-					gots.InsertPTS(es[9:14], uint64(newPTS))
-					printlnf("pid %v: PTS = %.4f -> %.4f (%v -> %v)", currPID, float64(pts)/gots.PtsClockRate, float64(newPTS)/gots.PtsClockRate, pts, newPTS)
+					if pts > info.maxPts {
+						info.maxPts = pts
+					}
+					info.addPts(pts)
 
-				}
+					if outFile != nil {
+						// newPTS := gots.PTS(pts).Add(gots.PTS(currentOffset / 300))
+						// if prevNewPCR != 0 && uint64(newPTS) > (prevNewPCR/300)+2*gots.PtsClockRate {
+						// 	newPTS = gots.PTS(pts).Add(gots.PTS(lastOffset / 300))
+						// }
+						// gots.InsertPTS(es[9:14], uint64(newPTS))
+						newPTS := info.transformPts(pts)
+						gots.InsertPTS(es[9:14], newPTS)
+						printlnf("pid %v: PTS = %.4f -> %.4f (%v -> %v)", currPID, float64(pts)/gots.PtsClockRate, float64(newPTS)/gots.PtsClockRate, pts, newPTS)
+					} else {
+						printlnf("pid %v: PTS = %.4f (%v)", currPID, float64(pts)/gots.PtsClockRate, pts)
+					}
+				} else {
+                    printlnf("pid %v: no pts or dts set!", currPID)
+                }
 				if err == nil && h.HasDTS() && h.DTS() != 0 {
 					dts := h.DTS()
 
-					newDTS := gots.PTS(dts).Add(gots.PTS(currentOffset / 300))
-					if uint64(newDTS) > (prevNewPCR/300)+2*gots.PtsClockRate {
-						newDTS = gots.PTS(dts).Add(gots.PTS(lastOffset / 300))
+					if outFile != nil {
+						// newDTS := gots.PTS(dts).Add(gots.PTS(currentOffset / 300))
+						// if uint64(newDTS) > (prevNewPCR/300)+2*gots.PtsClockRate {
+						// 	newDTS = gots.PTS(dts).Add(gots.PTS(lastOffset / 300))
+						// }
+						// gots.InsertPTS(es[14:19], uint64(newDTS))
+						newDTS := info.transformPts(dts)
+						printlnf("pid %v: DTS = %.4f -> %.4f (%v -> %v)", currPID, float64(dts)/gots.PtsClockRate, float64(newDTS)/gots.PtsClockRate, dts, newDTS)
+					} else {
+						printlnf("pid %v: DTS = %.4f (%v)", currPID, float64(dts)/gots.PtsClockRate, dts)
 					}
-					gots.InsertPTS(es[14:19], uint64(newDTS))
-
-					printlnf("pid %v: DTS = %.4f -> %.4f (%v -> %v)", currPID, float64(dts)/gots.PtsClockRate, float64(newDTS)/gots.PtsClockRate, dts, newDTS)
 				}
 			}
 		}
@@ -326,4 +412,8 @@ func printPat(pat psi.PAT) {
 
 func printlnf(format string, a ...interface{}) {
 	fmt.Printf(format+"\n", a...)
+}
+
+func printf(format string, a ...interface{}) {
+	fmt.Printf(format, a...)
 }
